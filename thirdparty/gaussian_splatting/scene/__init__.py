@@ -12,6 +12,8 @@
 import os
 import random
 import json
+import sys
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 from utils.system_utils import searchForMaxIteration
 from scene.dataset_readers import sceneLoadTypeCallbacks
 from scene.oursfull import GaussianModel

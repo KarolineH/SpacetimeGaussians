@@ -34,12 +34,15 @@ from thirdparty.gaussian_splatting.utils.my_utils import rotmat2qvec
 from thirdparty.gaussian_splatting.helper3dg import getcolmapsinglen3d
 from thirdparty.gaussian_splatting.colmap_loader import read_extrinsics_binary, read_intrinsics_binary
 
-def prepare_colmap(folder, offset, extension, point_root):
+def prepare_colmap(folder, offset, extension, point_root, test_cams):
+    test_cam_strings = ['/'+str(ID) for ID in test_cams] # turn into list of strings
     folderlist =  sorted(folder.iterdir())
+    filtered = [entry for entry in folderlist if not np.any([str(entry).endswith(ID) for ID in test_cam_strings])] # only training images!
+
     savedir = point_root / f"colmap_{offset}" / "input"
     savedir.mkdir(exist_ok=True, parents=True)
         
-    for folder in folderlist :
+    for folder in filtered :
         imagepath = folder / f"{str(offset).zfill(6)}.{extension}"
         imagesavepath = savedir / f"{folder.name}.{extension}"
         
@@ -47,6 +50,7 @@ def prepare_colmap(folder, offset, extension, point_root):
             continue
             
         imagesavepath.symlink_to(imagepath.resolve())
+        # shutil.copy(imagepath, imagesavepath)
 
 def create_cameras_file(md):
     cam_ids = md['cam_id'][0]
@@ -114,14 +118,15 @@ def write_colmap_single_cam(path, cameras, offset=0):
         # assert abs(cx - w / 2) / cx < 0.10, f"cx is not close to w/2: {cx}, w: {w}"
         # assert abs(cy - h / 2) / cy < 0.10, f"cy is not close to h/2: {cy}, h: {h}"
 
-        line = f"{ID} " + " ".join(map(str, colmapQ)) + " " + " ".join(map(str, T)) + f" {ID} {filename}\n"
+        line = f"{ID} " + " ".join(map(str, colmapQ)) + " " + " ".join(map(str, T)) + f" {1} {filename}\n"
         imagetxtlist.append(line)
         imagetxtlist.append("\n")
 
-        params = np.array((fx , fy, cx, cy,))
-        camera_id = db.add_camera(1, w, h, params)
-        cameraline = f"{ID} PINHOLE {w} {h} {fx} {fy} {cx} {cy}\n"
-        cameratxtlist.append(cameraline)
+        if j==0:
+            params = np.array((fx , fy, cx, cy,))
+            camera_id = db.add_camera(1, w, h, params)
+            cameraline = f"{1} PINHOLE {w} {h} {fx} {fy} {cx} {cy}\n"
+            cameratxtlist.append(cameraline)
         image_id = db.add_image(filename, camera_id,  prior_q=colmapQ, prior_t=T, image_id=ID)
         db.commit()
     db.close()
@@ -132,7 +137,7 @@ def write_colmap_single_cam(path, cameras, offset=0):
 
 if __name__ == "__main__" :
     """
-    1. Move images for each frame to its own colmap project folder: "scene_root/point/colmap_*/"
+    1. Move only training images for each frame to its own colmap project folder: "scene_root/point/colmap_*/"
     2. Retrieve the camera details from only one reference frame (they are static anyway), copy to all other frames in colmap DB format
     3. Run Colmap for each frame
     """
@@ -140,7 +145,8 @@ if __name__ == "__main__" :
     parser.add_argument("--imageext", default="png", type=str)
     parser.add_argument("--basedir", default="/workspace/input_data/rotation", type=str)
     parser.add_argument("--startframe", default=1, type=int) # Frames are numbered 1 to 48 
-    parser.add_argument("--endframe", default=30, type=int)
+    parser.add_argument("--endframe", default=49, type=int)
+    parser.add_argument("--refframe", default=1, type=int)
     args = parser.parse_args()
 
     # check image extension
@@ -154,6 +160,7 @@ if __name__ == "__main__" :
     start_frame_num = args.startframe
     end_frame_num = args.endframe
     duration = args.endframe - args.startframe
+    pose_ref_frame_num = args.refframe
 
     # input checking
     if start_frame_num >= end_frame_num:
@@ -166,17 +173,20 @@ if __name__ == "__main__" :
     
     # path to images
     decoded_frame_root = base_dir / "ims"
-    md = json.load((base_dir / "meta.json").open())
+    train_md = json.load((base_dir / "train_meta.json").open())
+    test_md = json.load((base_dir / "test_meta.json").open())
+    test_camera_ids = test_md['cam_id'][0]
 
     ## 1. prepare colmap input structure
     point_root = base_dir / "point"
     print("Start preparing colmap image input")
     for offset in range(start_frame_num, end_frame_num):
-        prepare_colmap(decoded_frame_root, offset, image_ext, point_root)
+        prepare_colmap(decoded_frame_root, offset, image_ext, point_root, test_camera_ids)
         # Creates the desired folder structure for COLAMP by creating symlinks to the images
+        # ONLY takes training images, not test images
     
     ## 2. Get the camera details and create colmap databases for each frame 
-    cameras = create_cameras_file(md) # This is the same for each frame, since the cameras are all static
+    cameras = create_cameras_file(train_md) # This is the same for each frame, since the cameras are all static
     colmap_project_root = base_dir / "point"
     for offset in tqdm.tqdm(range(start_frame_num, end_frame_num), desc="convert cam data to colmap db"):
         write_colmap_single_cam(colmap_project_root, cameras, offset)
